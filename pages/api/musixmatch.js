@@ -11,11 +11,14 @@ export default async function handler(req, res) {
   
   const { target_path, ...params } = req.query;
   
+  // 🔍 打印所有收到的参数
+  console.log('[Musixmatch Proxy] Received params:', JSON.stringify(params, null, 2));
   console.log('[Musixmatch Proxy] target_path:', target_path);
   
   // ========== 合并请求模式 ==========
   // 当请求 macro.subtitles.get 时，同时获取 richsync
   if (target_path === '/ws/1.1/macro.subtitles.get') {
+    console.log('[Musixmatch Proxy] 🚀 Entering merged request mode');
     return await handleMergedRequest(params, res);
   }
   
@@ -28,12 +31,18 @@ export default async function handler(req, res) {
     });
     musixmatchUrl.searchParams.append('format', 'json');
     
+    // 🔍 打印完整的请求 URL
+    console.log('[Musixmatch Proxy] Full URL:', musixmatchUrl.toString());
+    
     const response = await fetch(musixmatchUrl.toString(), {
       headers: {
         'Accept': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
+    
+    // 🔍 打印响应状态
+    console.log('[Musixmatch Proxy] Response status:', response.status);
     
     const data = await response.json();
     return res.status(200).json(data);
@@ -50,6 +59,7 @@ export default async function handler(req, res) {
 // 合并请求处理函数
 async function handleMergedRequest(params, res) {
   console.log('[Musixmatch Proxy] 🚀 Starting merged request (richsync + subtitles)');
+  console.log('[Musixmatch Proxy] Merged request params:', JSON.stringify(params, null, 2));
   
   // 提取参数
   const trackSpotifyId = params.track_spotify_id;
@@ -58,6 +68,9 @@ async function handleMergedRequest(params, res) {
   const selectedLanguage = params.selected_language || '';
   const usertoken = params.usertoken || '';
   const appId = params.app_id || '';
+  
+  console.log('[Musixmatch Proxy] Using usertoken:', usertoken ? '***' : 'missing');
+  console.log('[Musixmatch Proxy] Using app_id:', appId);
   
   // 构建基础查询参数
   const baseParams = {
@@ -82,7 +95,10 @@ async function handleMergedRequest(params, res) {
       subtitlesPromise
     ]);
     
-    // 构建合并后的响应（兼容客户端现有解析逻辑）
+    console.log('[Musixmatch Proxy] Richsync status:', richsyncData?.message?.header?.status_code);
+    console.log('[Musixmatch Proxy] Subtitles status:', subtitlesData?.message?.header?.status_code);
+    
+    // 构建合并后的响应
     const mergedResponse = {
       message: {
         header: {
@@ -135,7 +151,8 @@ async function fetchRichsync(baseParams, usertoken, appId) {
     }
   });
   
-  console.log('[Musixmatch Proxy] Fetching richsync...');
+  // 🔍 打印完整的 RichSync 请求 URL
+  console.log('[Musixmatch Proxy] Richsync Full URL:', url.toString());
   
   try {
     const response = await fetch(url.toString(), {
@@ -144,6 +161,10 @@ async function fetchRichsync(baseParams, usertoken, appId) {
         'User-Agent': 'Mozilla/5.0'
       }
     });
+    
+    // 🔍 打印 RichSync 响应状态
+    console.log('[Musixmatch Proxy] Richsync response status:', response.status);
+    
     const data = await response.json();
     return data;
   } catch (error) {
@@ -178,7 +199,8 @@ async function fetchSubtitles(baseParams, usertoken, appId, selectedLanguage) {
     }
   });
   
-  console.log('[Musixmatch Proxy] Fetching subtitles...');
+  // 🔍 打印完整的字幕请求 URL
+  console.log('[Musixmatch Proxy] Subtitles Full URL:', url.toString());
   
   try {
     const response = await fetch(url.toString(), {
@@ -187,6 +209,10 @@ async function fetchSubtitles(baseParams, usertoken, appId, selectedLanguage) {
         'User-Agent': 'Mozilla/5.0'
       }
     });
+    
+    // 🔍 打印字幕响应状态
+    console.log('[Musixmatch Proxy] Subtitles response status:', response.status);
+    
     const data = await response.json();
     return data;
   } catch (error) {
