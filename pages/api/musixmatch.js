@@ -24,7 +24,7 @@ export default async function handler(req, res) {
   
   // 原有逻辑：普通代理
   try {
-    const musixmatchUrl = new URL(`https://apic.musixmatch.com${target_path}`);
+    const musixmatchUrl = new URL(`https://apic-appmobile.musixmatch.com${target_path}`);
     
     Object.keys(params).forEach(key => {
       musixmatchUrl.searchParams.append(key, params[key]);
@@ -137,7 +137,7 @@ async function handleMergedRequest(params, res) {
 
 // 请求 RichSync 逐字歌词
 async function fetchRichsync(baseParams, usertoken, appId) {
-  const url = new URL('https://apic.musixmatch.com/ws/1.1/track.richsync.get');
+  const url = new URL('https://apic-appmobile.musixmatch.com/ws/1.1/track.richsync.get');
   
   const params = {
     ...baseParams,
@@ -180,7 +180,7 @@ async function fetchRichsync(baseParams, usertoken, appId) {
 
 // 请求字幕（包含翻译）
 async function fetchSubtitles(baseParams, usertoken, appId, selectedLanguage) {
-  const url = new URL('https://apic.musixmatch.com/ws/1.1/track.subtitles.get');
+  const url = new URL('https://apic-appmobile.musixmatch.com/ws/1.1/track.subtitles.get');
   
   const params = {
     ...baseParams,
