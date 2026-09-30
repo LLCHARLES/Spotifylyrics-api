@@ -20,53 +20,30 @@ export default async function handler(req, res) {
 
   console.log('[Musixmatch Proxy] target_path:', target_path);
 
-  // 所有请求直接透传给 Musixmatch，只加 headers
+  // ========== 合并请求模式 ==========
+  // 当请求 macro.subtitles.get 时，同时获取 richsync
+  if (target_path === '/ws/1.1/macro.subtitles.get') {
+    return await handleMergedRequest(params, res);
+  }
+
+  // 原有逻辑：普通代理
   try {
     const musixmatchUrl = new URL(`https://apic-appmobile.musixmatch.com${target_path}`);
 
     Object.keys(params).forEach(key => {
-      if (params[key]) {
-        musixmatchUrl.searchParams.append(key, params[key]);
-      }
+      musixmatchUrl.searchParams.append(key, params[key]);
     });
-    if (!musixmatchUrl.searchParams.has('format')) {
-      musixmatchUrl.searchParams.append('format', 'json');
-    }
+    musixmatchUrl.searchParams.append('format', 'json');
 
-    console.log('[Musixmatch Proxy] URL:', musixmatchUrl.toString());
+    console.log('[Musixmatch Proxy] Full URL:', musixmatchUrl.toString());
 
     const response = await fetch(musixmatchUrl.toString(), {
       headers: MXM_HEADERS
     });
 
-    console.log('[Musixmatch Proxy] status:', response.status);
+    console.log('[Musixmatch Proxy] Response status:', response.status);
 
     const data = await response.json();
-
-    // 翻译注入：当请求带 selected_language 时，用 crowd.track.translations.get
-    // 获取翻译，注入到 subtitle_translated 字段（Musixmatch 返回 restricted=1）
-    const selectedLanguage = params.selected_language;
-    if (selectedLanguage && target_path === '/ws/1.1/macro.subtitles.get') {
-      console.log('[Musixmatch Proxy] selected_language:', selectedLanguage);
-      const usertoken = params.usertoken || '';
-      const appId = params.app_id || '';
-      const trackSpotifyId = params.track_spotify_id || '';
-      const qTrack = params.q_track || '';
-      const qArtist = params.q_artist || '';
-
-      if (trackSpotifyId || (qTrack && qArtist)) {
-        const translationsData = await fetchTranslations(
-          trackSpotifyId, qTrack, qArtist, selectedLanguage, usertoken, appId
-        );
-
-        if (translationsData) {
-          console.log('[Musixmatch Proxy] Translations status:',
-            translationsData?.message?.header?.status_code);
-          injectTranslations(data, translationsData);
-        }
-      }
-    }
-
     return res.status(200).json(data);
 
   } catch (error) {
@@ -78,18 +55,75 @@ export default async function handler(req, res) {
   }
 }
 
-// 请求 crowd 翻译
-async function fetchTranslations(trackSpotifyId, qTrack, qArtist, selectedLanguage, usertoken, appId) {
-  const url = new URL('https://apic-appmobile.musixmatch.com/ws/1.1/crowd.track.translations.get');
+// 合并请求处理函数
+async function handleMergedRequest(params, res) {
+  console.log('[Musixmatch Proxy] Starting merged request (richsync + subtitles)');
+
+  const usertoken = params.usertoken || '';
+  const appId = params.app_id || '';
+
+  // 透传客户端发来的所有参数（namespace, richsync_compact_type 等）
+  const baseParams = { ...params };
+  delete baseParams.usertoken;
+  delete baseParams.app_id;
+  baseParams.format = 'json';
+
+  // 并行请求两个接口
+  const richsyncPromise = fetchRichsync(baseParams, usertoken, appId);
+  const subtitlesPromise = fetchSubtitles(baseParams, usertoken, appId);
+
+  try {
+    const [richsyncData, subtitlesData] = await Promise.all([
+      richsyncPromise,
+      subtitlesPromise
+    ]);
+
+    console.log('[Musixmatch Proxy] Richsync status:', richsyncData?.message?.header?.status_code);
+    console.log('[Musixmatch Proxy] Subtitles status:', subtitlesData?.message?.header?.status_code);
+
+    // 构建合并后的响应（与 macro.subtitles.get 的格式一致）
+    const mergedResponse = {
+      message: {
+        header: {
+          status_code: 200,
+          execute_time: 0
+        },
+        body: {
+          macro_calls: {
+            "track.richsync.get": richsyncData,
+            "track.subtitles.get": subtitlesData
+          }
+        }
+      }
+    };
+
+    return res.status(200).json(mergedResponse);
+
+  } catch (error) {
+    console.error('[Musixmatch Proxy] Merged request failed:', error.message);
+
+    return res.status(500).json({
+      message: {
+        header: {
+          status_code: 500,
+          execute_time: 0
+        },
+        body: {
+          macro_calls: {}
+        }
+      }
+    });
+  }
+}
+
+// 请求 RichSync 逐字歌词
+async function fetchRichsync(baseParams, usertoken, appId) {
+  const url = new URL('https://apic-appmobile.musixmatch.com/ws/1.1/track.richsync.get');
 
   const params = {
-    track_spotify_id: trackSpotifyId,
-    q_track: qTrack,
-    q_artist: qArtist,
-    selected_language: selectedLanguage,
+    ...baseParams,
     usertoken: usertoken,
-    app_id: appId,
-    format: 'json'
+    app_id: appId
   };
 
   Object.keys(params).forEach(key => {
@@ -98,89 +132,63 @@ async function fetchTranslations(trackSpotifyId, qTrack, qArtist, selectedLangua
     }
   });
 
-  console.log('[Musixmatch Proxy] Translations URL:', url.toString());
+  console.log('[Musixmatch Proxy] Richsync URL:', url.toString());
 
   try {
-    const response = await fetch(url.toString(), { headers: MXM_HEADERS });
-    console.log('[Musixmatch Proxy] Translations status:', response.status);
-    return await response.json();
+    const response = await fetch(url.toString(), {
+      headers: MXM_HEADERS
+    });
+
+    console.log('[Musixmatch Proxy] Richsync status:', response.status);
+
+    const data = await response.json();
+    return data;
   } catch (error) {
-    console.error('[Musixmatch Proxy] Translations fetch failed:', error.message);
-    return null;
+    console.error('[Musixmatch Proxy] Richsync fetch failed:', error.message);
+    return {
+      message: {
+        header: { status_code: 500 },
+        body: {}
+      }
+    };
   }
 }
 
-// 把 crowd 翻译注入到 macro.subtitles.get 响应的 subtitle_translated 字段中
-// 客户端从 subtitle.subtitle_translated.subtitle_body 读翻译，格式同 subtitle_body:
-// [{"text":"翻译文本","time":{"total":123.45}}, ...]
-function injectTranslations(data, translationsData) {
+// 请求字幕
+async function fetchSubtitles(baseParams, usertoken, appId) {
+  const url = new URL('https://apic-appmobile.musixmatch.com/ws/1.1/track.subtitles.get');
+
+  const params = {
+    ...baseParams,
+    subtitle_format: 'mxm',
+    usertoken: usertoken,
+    app_id: appId
+  };
+
+  Object.keys(params).forEach(key => {
+    if (params[key]) {
+      url.searchParams.append(key, params[key]);
+    }
+  });
+
+  console.log('[Musixmatch Proxy] Subtitles URL:', url.toString());
+
   try {
-    const translationsList = translationsData?.message?.body?.translations_list;
-    if (!Array.isArray(translationsList)) {
-      console.log('[Musixmatch Proxy] No translations_list found');
-      return;
-    }
-
-    const transMap = {};
-    for (const entry of translationsList) {
-      const t = entry.translation;
-      if (!t) continue;
-      const original = t.matched_line || t.subtitle_matched_line || '';
-      const translated = t.description || '';
-      if (original && translated) {
-        transMap[original] = translated;
-      }
-    }
-
-    console.log('[Musixmatch Proxy] translations map size:', Object.keys(transMap).length);
-    if (Object.keys(transMap).length === 0) {
-      console.log('[Musixmatch Proxy] translations map is empty');
-      return;
-    }
-
-    // 在 macro_calls 里找 track.subtitles.get 的 subtitle_list
-    const macroCalls = data?.message?.body?.macro_calls;
-    if (!macroCalls) {
-      console.log('[Musixmatch Proxy] No macro_calls found');
-      return;
-    }
-
-    const subtitlesCall = macroCalls['track.subtitles.get'];
-    const subtitleList = subtitlesCall?.message?.body?.subtitle_list;
-    if (!Array.isArray(subtitleList) || subtitleList.length === 0) {
-      console.log('[Musixmatch Proxy] No subtitle_list found');
-      return;
-    }
-
-    const subtitle = subtitleList[0].subtitle;
-    if (!subtitle) return;
-
-    const subtitleBody = subtitle.subtitle_body;
-    if (!subtitleBody) return;
-
-    const originalLines = JSON.parse(subtitleBody);
-    if (!Array.isArray(originalLines)) return;
-
-    const translatedLines = originalLines.map(line => {
-      const originalText = line.text || '';
-      const translatedText = transMap[originalText] || '';
-      return {
-        text: translatedText,
-        time: line.time
-      };
+    const response = await fetch(url.toString(), {
+      headers: MXM_HEADERS
     });
 
-    subtitle.subtitle_translated = {
-      subtitle_body: JSON.stringify(translatedLines),
-      subtitle_language: translationsData?.message?.body?.selected_language || ''
-    };
+    console.log('[Musixmatch Proxy] Subtitles status:', response.status);
 
-    if (subtitle.restricted === true || subtitle.restricted === 1) {
-      subtitle.restricted = 0;
-    }
-
-    console.log('[Musixmatch Proxy] Injected translations into subtitle_translated');
+    const data = await response.json();
+    return data;
   } catch (error) {
-    console.error('[Musixmatch Proxy] injectTranslations failed:', error.message);
+    console.error('[Musixmatch Proxy] Subtitles fetch failed:', error.message);
+    return {
+      message: {
+        header: { status_code: 500 },
+        body: {}
+      }
+    };
   }
 }
